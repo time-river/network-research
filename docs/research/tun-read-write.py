@@ -29,14 +29,6 @@ import select
 import os
 import fcntl
 from fcntl import ioctl
-import struct
-import random
-
-from pypacker.layer12 import ethernet
-from pypacker.layer3.ip import IP
-from pypacker.layer3.icmp import ICMP
-from pypacker.layer4 import tcp
-from pypacker import psocket
 
 TUNSETIFF = 0x400454ca
 IFF_TUN   = 0x0001
