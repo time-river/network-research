@@ -29,6 +29,7 @@ import select
 import os
 import fcntl
 from fcntl import ioctl
+import struct
 
 TUNSETIFF = 0x400454ca
 IFF_TUN   = 0x0001
@@ -48,8 +49,6 @@ def loop(fd):
     epoll = select.epoll()
     epoll.register(fd, select.EPOLLIN)
 
-    req_nr = 1
-    req_id = random.randint(1, 65000)
     while True:
         connections = {}; requests = {}; responses = {}
         events = epoll.poll(1)
