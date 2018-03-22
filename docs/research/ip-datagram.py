@@ -23,7 +23,7 @@ SIOCGIFMTU = 0x8921
 def mtu_discovery(ifname):
     s = socket.socket(type=socket.SOCK_DGRAM)
     ifs = fcntl.ioctl(s, SIOCGIFMTU, struct.pack("16s16x", ifname))
-    mtu = struct.unpack('<H',ifs[16:18])[0]
+    mtu = struct.unpack('<H', ifs[16:18])[0]
     print("MTU: ", mtu)
     return mtu
 
@@ -61,9 +61,15 @@ def loop(fd, mtu):
         for fileno, event in events:
             if event & select.EPOLLIN:
                 print("EPOLLIN")
-                data = os.read(fileno, mtu)
-                print(len(data), data)
-                os.write(fd, data)
+                packet = os.read(fileno, mtu)
+                size = len(packet)
+                version = struct.unpack('!c', packet[0:1])[0]
+                protocol = struct.unpack('!c', packet[9:10])[0]
+                src = struct.unpack('!4s', packet[12:16])[0]
+                dst = struct.unpack('!4s', packet[16:20])[0]
+                print("size={:d}, version_ihl=0x{:s}, protocol=0x{:s}, src={:s}, dst={:s}".format(
+                        size, version.hex(), protocol.hex(), socket.inet_ntoa(src), socket.inet_ntoa(dst)))
+                os.write(fd, packet)
             elif event & select.EPOLLOUT:
                 print("EPOLLOUT")
                 data = os.read(fineno, 1024)
