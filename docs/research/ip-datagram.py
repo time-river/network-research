@@ -5,7 +5,9 @@ import fcntl
 import select
 import socket
 import struct
+from radix import Radix
 from pyroute2 import IPRoute
+
 
 TUN_PATH = "/dev/net/tun"
 TUN_IFNAME = "tun0"
@@ -15,6 +17,7 @@ TUN_TABLE = 100
 
 MAIN_TABLE = 254
 
+IP_FILE = "ip_list.txt"
 TUNSETIFF = 0x400454ca
 IFF_TUN   = 0x0001
 IFF_NO_PI = 0x1000
@@ -44,7 +47,25 @@ def tun_alloc(ifname):
     mtu = mtu_discovery(ifname)
     return ftun, mtu
 
-def loop(fd, mtu):
+def route_prepare(rtree, ips):
+    for ip in ips:
+        a = ip.strip()
+        print(a)
+        if a[0] == '!':
+            rnode = rtree.add(a.strip("! \t\n"))
+            rnode.data['result'] = False
+        else:
+            rnode = rtree.add(a)
+            rnode.data['result'] = True
+
+def route_match(rtree, ip):
+    rnode = rtree.search_best(ip)
+    if rnode is not None:
+        return rnode.data['result']
+    else:
+        return False
+
+def loop(fd, mtu, rtree):
     F_GETFL = fcntl.F_GETFL
     flag = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flag|os.O_NONBLOCK)
@@ -60,26 +81,32 @@ def loop(fd, mtu):
         events = epoll.poll(1)
         for fileno, event in events:
             if event & select.EPOLLIN:
-                print("EPOLLIN")
                 packet = os.read(fileno, mtu)
                 size = len(packet)
                 version = struct.unpack('!c', packet[0:1])[0]
                 protocol = struct.unpack('!c', packet[9:10])[0]
                 src = struct.unpack('!4s', packet[12:16])[0]
                 dst = struct.unpack('!4s', packet[16:20])[0]
-                print("size={:d}, version_ihl=0x{:s}, protocol=0x{:s}, src={:s}, dst={:s}".format(
-                        size, version.hex(), protocol.hex(), socket.inet_ntoa(src), socket.inet_ntoa(dst)))
+                if route_match(rtree, socket.inet_ntoa(dst)):
+                    match = "match ip_list"
+                else:
+                    match = "not match ip_list"
+                print("size={:d}, version_ihl=0x{:s}, protocol=0x{:s}, src={:s}, dst={:s}, {}".format(
+                        size, version.hex(), protocol.hex(), socket.inet_ntoa(src), socket.inet_ntoa(dst), match))
                 os.write(fd, packet)
             elif event & select.EPOLLOUT:
                 print("EPOLLOUT")
-                data = os.read(fineno, 1024)
-                print(len(data), data)
+                packet = os.read(fineno, 1024)
+                print(len(packet), packet)
  
 if __name__ == '__main__':
+    rtree = Radix()
     if os.geteuid() != 0:
         print("Need root privileges.")
         exit(0)
 
     ftun, mtu = tun_alloc(TUN_IFNAME.encode())
     monitor_prepare(TUN_IFNAME)
-    loop(ftun, mtu)
+    with open(IP_FILE) as f:
+        route_prepare(rtree, f.readlines())
+    loop(ftun, mtu, rtree)
