@@ -8,7 +8,8 @@ prepare:
     # ip tuntap add mode tun tun0
     # ip link set tun0 up
     # ip addr add 10.0.0.2/24 dev tun0
-    # ip route add default via 10.0.0.2 dev tun0 table 100 # ip rule add from all lookup 100 
+    # ip route add default via 10.0.0.2 dev tun0 table 100
+    # ip rule add from all lookup 100 
     # ip rule add from all iif tun0 lookup main
 
 reference:
@@ -21,6 +22,7 @@ reference:
         http://ct2wj.com/2016/02/28/shadowsocks-android-source-code-analysis/
         https://stackoverflow.com/questions/45794992/send-raw-ip-packet-with-tun-device
 matter https://serverfault.com/questions/411921/how-to-configure-linux-routing-filtering-to-send-packets-out-one-interface-over 
+        http://blog.csdn.net/dog250/article/details/78746198
       IP packet max size
         https://serverfault.com/questions/645890/tcpdump-truncates-to-1472-bytes-useful-data-in-udp-packets-during-the-capture
         https://gist.github.com/nzjrs/8934855
