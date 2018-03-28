@@ -1,14 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+'''
+description:
+    like 'simple-tun-read-write.py', but automatic configure tun device and route table.
+    catch all ip packet and print
+        'IP protocol version + IP header size'
+        'protocol of encapsulated packet'
+        'source IP'
+        'destination IP'
+        'result of destination ip whether match in ip stored in file "ip_list.txt"'
+
+    If packet is ICMP, then print some information about it.
+
+    The next version is wrote by rust-lang.
+
+'''
+
 import os
 import fcntl
 import select
 import socket
 import struct
+import random
 from radix import Radix
 from pyroute2 import IPRoute
 
+import traceback
 
 TUN_PATH = "/dev/net/tun"
 TUN_IFNAME = "tun0"
@@ -106,6 +124,74 @@ def route_match(rtree, ip):
     else:
         return False
 
+def icmp_parse(packet):
+    '''
+    ICMP Request format:
+         0         7 8        15 16                  31 
+        +-----------+-----------+----------------------+
+        |    Type   |    Code   | ICMP_Header_Checksum |
+        +-----------+-----------+----------------------+
+        |       Identifier      |   Sequence_number    |
+        +-----------------------+----------------------+
+        |                     Data                     |
+        +----------------------------------------------+
+
+    reference:
+        http://www.networksorcery.com/enp/protocol/icmp/msg8.htm
+    '''
+    type = struct.unpack('!B', packet[0:1])[0]
+    if type is not 0x08: # 8 is ICMP Echo Request
+        print("Not ICMP Request, type={}".format(hex(type)))
+        return None
+
+    code = struct.unpack('!B', packet[1:2])[0]
+    checksum = struct.unpack('!H', packet[2:4])[0]
+    identifier = struct.unpack('!H', packet[4:6])[0]
+    sequence = struct.unpack('!H', packet[6:8])[0]
+    print('ICMP Request: \n'
+        '   type={:s}, code={:s}, checksum={:s}, idenfitifer={:s}, sequence number={:s}'.format(
+        hex(type), hex(code), hex(checksum), hex(identifier), hex(sequence)))
+    return (identifier, sequence, packet[8:])
+
+def carry_around_add(a, b):
+    c = a + b
+    return (c & 0xffff) + (c >> 16)
+
+def calculate_checksum(msg):
+    s = 0
+    for i in range(0, len(msg), 2):
+        w = ord(msg[i]) + (ord(msg[i+1]) << 8)
+        s = carry_around_add(s, w)
+        return (~s & 0xffff)
+
+def icmp_echo(identifier, sequence, payload):
+    '''
+    ICMP Echo format:
+         0         7 8        15 16                  31 
+        +-----------+-----------+----------------------+
+        |    Type   |    Code   | ICMP_Header_Checksum |
+        +-----------+-----------+----------------------+
+        |       Identifier      |   Sequence_number    |
+        +-----------------------+----------------------+
+        |                     Data                     |
+        +----------------------------------------------+
+
+     RFC 792, page 15:
+
+         The data received in the echo request message must be returned in the echo reply message.
+
+     calculate checksum
+
+    reference:
+        http://www.networksorcery.com/enp/protocol/icmp/msg0.htm
+        http://www.networksorcery.com/enp/protocol/icmp/msg8.htm
+        http://arondight.me/2016/03/22/%E8%AE%A1%E7%AE%97IP%E3%80%81ICMP%E3%80%81TCP%E5%92%8CUDP%E5%8C%85%E7%9A%84%E6%A0%A1%E9%AA%8C%E5%92%8C/
+    '''
+    packet = struct.pack('!BBHHH{}s'.format(len(payload)), 0, 0, 0, identifier, sequence, payload)
+    checksum = calculate_checksum(packet) # however, it wouldn't work... I have gave up to use python, how about rust?
+    packet = struct.pack('!BB2sHH{}s'.format(len(payload)), 0, 0, checksum, identifier, sequence, payload)
+    return packet
+
 def loop(fd, mtu, rtree):
     '''
     receive data from <fd>, print
@@ -135,16 +221,24 @@ def loop(fd, mtu, rtree):
             if event & select.EPOLLIN:
                 packet = os.read(fileno, mtu)
                 size = len(packet)
-                version = struct.unpack('!c', packet[0:1])[0]
-                protocol = struct.unpack('!c', packet[9:10])[0]
+                identifier = struct.unpack('!H', packet[4:6])[0]
+                version_ihl = struct.unpack('!B', packet[0:1])[0]
+                protocol = struct.unpack('!B', packet[9:10])[0]
                 src = struct.unpack('!4s', packet[12:16])[0]
                 dst = struct.unpack('!4s', packet[16:20])[0]
                 if route_match(rtree, socket.inet_ntoa(dst)):
                     match = "match ip_list"
                 else:
                     match = "not match ip_list"
-                print("size={:d}, version_ihl=0x{:s}, protocol=0x{:s}, src={:s}, dst={:s}, {}".format(
-                        size, version.hex(), protocol.hex(), socket.inet_ntoa(src), socket.inet_ntoa(dst), match))
+                print("IP:\n"
+                        "   size={:d}, version_ihl={:s}, identifier={:s}, protocol={:s}, src={:s}, dst={:s}, {}".format(
+                        size, hex(version_ihl), hex(identifier), hex(protocol), socket.inet_ntoa(src), socket.inet_ntoa(dst), match))
+
+                if protocol is 0x01: # ICMP protocol
+                    header = icmp_parse(packet[20:])
+                    if header is not None:
+                        icmp_packet = icmp_echo(*header) # it does not work.
+
                 os.write(fd, packet)
             elif event & select.EPOLLOUT:
                 print("EPOLLOUT")
@@ -163,5 +257,7 @@ if __name__ == '__main__':
     try:
         monitor_prepare(TUN_IFNAME)
         loop(ftun, mtu, rtree)
-    except:
+    except Exception:
+        print(traceback.format_exc())
+    finally:
         clean_prepare(TUN_IFNAME)
