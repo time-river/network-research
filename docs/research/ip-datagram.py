@@ -84,9 +84,22 @@ def clean_prepare(ifname):
     '''
     ip = IPRoute()
     idx = ip.link_lookup(ifname=ifname)[0]
-    ip.rule('del', table=TUN_TABLE, priority=100, action='FR_ACT_TO_TBL')
-    ip.rule('del', table=MAIN_TABLE, priority=10, iifname=TUN_IFNAME, action='FR_ACT_TO_TBL')
-    ip.route('del', dst="0.0.0.0", mask=0, gateway=TUN_ADDRESS, table=TUN_TABLE)
+    try:
+        ip.rule('del', table=TUN_TABLE, priority=100, action='FR_ACT_TO_TBL')
+    except:
+        pass
+    try:
+        ip.rule('del', table=MAIN_TABLE, priority=10, iifname=TUN_IFNAME, action='FR_ACT_TO_TBL')
+    except:
+        pass
+    try:
+        ip.route('del', dst="0.0.0.0", mask=0, gateway=TUN_ADDRESS, table=TUN_TABLE)
+    except:
+        pass
+    try:
+        ip.addr('del', index=idx, address=TUN_ADDRESS, mask=TUN_ADDRESS_MASK)
+    except:
+        pass
 
 def tun_alloc(ifname):
     '''
@@ -106,7 +119,6 @@ def route_prepare(rtree, ips):
     '''
     for ip in ips:
         a = ip.strip()
-        print(a)
         if a[0] == '!':
             rnode = rtree.add(a.strip("! \t\n"))
             rnode.data['result'] = False
@@ -236,8 +248,8 @@ def loop(fd, mtu, rtree):
 
                 if protocol is 0x01: # ICMP protocol
                     header = icmp_parse(packet[20:])
-                    if header is not None:
-                        icmp_packet = icmp_echo(*header) # it does not work.
+        #            if header is not None:
+        #                icmp_packet = icmp_echo(*header) # it does not work.
 
                 os.write(fd, packet)
             elif event & select.EPOLLOUT:
