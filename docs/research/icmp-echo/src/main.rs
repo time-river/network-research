@@ -143,7 +143,9 @@ impl Write for Tun {
 }
 
 #[repr(packed)]
-pub struct IPv4Header { pub version_ihl: u8, // IP version (= 4) + Internet header length pub type_of_service: u8, // Type of service
+pub struct IPv4Header {
+    pub version_ihl: u8, // IP version (= 4) + Internet header length
+    pub type_of_service: u8, // Type of service
     pub total_length: u16, // Total length in octets
     pub identification: u16, // Identification
     pub flags_fragment_offset: u16, // 3-bits Flags + Fragment Offset
@@ -155,7 +157,7 @@ pub struct IPv4Header { pub version_ihl: u8, // IP version (= 4) + Internet head
 }
 
 #[repr(packed)]
-pub struct IcmpHeader {
+pub struct ICMPHeader {
     pub icmp_type: u8,
     pub icmp_code: u8,
     pub icmp_checksum: u16,
@@ -196,6 +198,27 @@ fn ipv4_cksum(data: &[u8]) -> u16 {
     raw_cksum(data.as_ptr() as *const IPv4Header, mem::size_of::<IPv4Header>())
 }
 
+fn ipv4_header_parse(data: &[u8]) {
+    let header = unsafe { &*(data.as_ptr() as *const IPv4Header) };
+    println!("version_ihl=0x{:x}, type_of_service=0x{:x}, total_length={}, identification={}, time_to_live=0x{:x}, header_checksum=0x{:x}, src={}, dst={}, protocol=0x{:x}",
+             header.version_ihl, header.type_of_service, u16::from_be(header.total_length), u16::from_be(header.identification), header.time_to_live,
+             header.header_checksum, pretty_print_ipv4(header.source_address), pretty_print_ipv4(header.destination_address), header.protocol);
+    if header.protocol == 0x01 {
+        icmp_header_parse(&data[20..]);
+    }
+}
+
+fn pretty_print_ipv4(address: u32) -> String {
+    let address = u32::from_be(address);
+    format!("{}.{}.{}.{}", address >> 24 & 0xFF, address >> 16 & 0x00FF, address >> 8 & 0x0000FF, address & 0x000000FF)
+}
+
+fn icmp_header_parse(data: &[u8]) {
+    let header = unsafe { &*(data.as_ptr() as *const ICMPHeader) };
+    println!("  icmp_type=0x{:x}, icmp_code=0x{:x}, icmp_checksum={:x}, icmp_ident={}, icmp_seq_num={}",
+             header.icmp_type, header.icmp_code, header.icmp_checksum, u16::from_be(header.icmp_ident), u16::from_be(header.icmp_seq_num));
+}
+
 fn main() {
             /*
             let mut buffer = [0i8; IFNAMSIZ];
@@ -208,8 +231,7 @@ fn main() {
     tun.up();
 
     println!("file={:?}, mtu={}", tun.handle, tun.mtu);
-    //let mut data = vec![0u8; tun.mtu as usize];
-    let mut data = [0u8; 1600];
+    let mut data = vec![0u8; tun.mtu as usize];
     let mut len: usize = 0;
 
     loop {
@@ -221,6 +243,7 @@ fn main() {
             Err(e) => {} ,
         }
 
-        tun.write(&mut data[..len]);
+        ipv4_header_parse(&data);
+        tun.write(&data);
     }
 }
