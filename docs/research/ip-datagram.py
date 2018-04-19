@@ -161,48 +161,8 @@ def icmp_parse(packet):
     identifier = struct.unpack('!H', packet[4:6])[0]
     sequence = struct.unpack('!H', packet[6:8])[0]
     print('ICMP Request: \n'
-        '   type={:s}, code={:s}, checksum={:s}, idenfitifer={:s}, sequence number={:s}'.format(
-        hex(type), hex(code), hex(checksum), hex(identifier), hex(sequence)))
-    return (identifier, sequence, packet[8:])
-
-def carry_around_add(a, b):
-    c = a + b
-    return (c & 0xffff) + (c >> 16)
-
-def calculate_checksum(msg):
-    s = 0
-    for i in range(0, len(msg), 2):
-        w = ord(msg[i]) + (ord(msg[i+1]) << 8)
-        s = carry_around_add(s, w)
-        return (~s & 0xffff)
-
-def icmp_echo(identifier, sequence, payload):
-    '''
-    ICMP Echo format:
-         0         7 8        15 16                  31 
-        +-----------+-----------+----------------------+
-        |    Type   |    Code   | ICMP_Header_Checksum |
-        +-----------+-----------+----------------------+
-        |       Identifier      |   Sequence_number    |
-        +-----------------------+----------------------+
-        |                     Data                     |
-        +----------------------------------------------+
-
-     RFC 792, page 15:
-
-         The data received in the echo request message must be returned in the echo reply message.
-
-     calculate checksum
-
-    reference:
-        http://www.networksorcery.com/enp/protocol/icmp/msg0.htm
-        http://www.networksorcery.com/enp/protocol/icmp/msg8.htm
-        http://arondight.me/2016/03/22/%E8%AE%A1%E7%AE%97IP%E3%80%81ICMP%E3%80%81TCP%E5%92%8CUDP%E5%8C%85%E7%9A%84%E6%A0%A1%E9%AA%8C%E5%92%8C/
-    '''
-    packet = struct.pack('!BBHHH{}s'.format(len(payload)), 0, 0, 0, identifier, sequence, payload)
-    checksum = calculate_checksum(packet) # however, it wouldn't work... I have gave up to use python, how about rust?
-    packet = struct.pack('!BB2sHH{}s'.format(len(payload)), 0, 0, checksum, identifier, sequence, payload)
-    return packet
+        '   type={:s}, code={:s}, checksum={:s}, idenfitifer={}, sequence number={:s}'.format(
+        hex(type), hex(code), hex(checksum), identifier, hex(sequence)))
 
 def loop(fd, mtu, rtree):
     '''
@@ -243,13 +203,11 @@ def loop(fd, mtu, rtree):
                 else:
                     match = "not match ip_list"
                 print("IP:\n"
-                        "   size={:d}, version_ihl={:s}, identifier={:s}, protocol={:s}, src={:s}, dst={:s}, {}".format(
-                        size, hex(version_ihl), hex(identifier), hex(protocol), socket.inet_ntoa(src), socket.inet_ntoa(dst), match))
+                        "   size={:d}, version_ihl={:s}, identifier={}, protocol={:s}, src={:s}, dst={:s}, {}".format(
+                        size, hex(version_ihl), identifier, hex(protocol), socket.inet_ntoa(src), socket.inet_ntoa(dst), match))
 
                 if protocol is 0x01: # ICMP protocol
-                    header = icmp_parse(packet[20:])
-        #            if header is not None:
-        #                icmp_packet = icmp_echo(*header) # it does not work.
+                    icmp_parse(packet[20:])
 
                 os.write(fd, packet)
             elif event & select.EPOLLOUT:
