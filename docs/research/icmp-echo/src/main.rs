@@ -1,249 +1,162 @@
+/*
+ * This's a program that:
+ *  catch all IPv4 packet, then fake icmp echo if the catched IPv4 packet is icmp request, or
+ *  directly out of local.
+ */
 
 extern crate libc;
 
-//use std::os::unix::io::RawFd;
-use std::ffi::CString;
-//use std::ffi::CStr;
-use std::io;
-use std::fs;
-use std::path;
-use std::slice;
-use std::mem;
-use std::string;
-use std::os::unix::io::AsRawFd;
-use std::io::{Read, Write};
+mod types;
+#[macro_use]
+mod macros;
+mod checksum;
+mod device;
+mod ipv4;
+mod icmp;
 
 use std::process;
+use std::io::{Read, Write};
+use std::net::Ipv4Addr;
+use device::Tun;
+use ipv4::{IPv4Packet, MutIPv4Packet};
+use icmp::{ICMPPacket, MutICMPPacket};
+use checksum::raw_checksum;
 
-use libc::c_char;
-use libc::c_short;
-use libc::c_int;
-use libc::c_ulong;
-use libc::ioctl;
-use libc::socket;
-use libc::AF_INET;
-use libc::SOCK_DGRAM;
+const TUN_NAME: &str = "tun0";
+static mut TUN: Option<Tun> = None;
 
-const TUN_PATH: &str = "/dev/net/tun";
-const TUN_NAME: &str= "tun0";
-const IFNAMSIZ: usize = 16;
-const TUNSETIFF: c_ulong = 0x400454ca; // https://stackoverflow.com/questions/22496123/what-is-the-meaning-of-this-macro-iormy-macig-0-int
-const SIOCGIFMTU: c_ulong = 0x8921;
-const IFF_TUN: c_short = 0x0001;
-const IFF_NO_PI: c_short = 0x1000;
-
-#[repr(C)]
-union Ifrifru {
-    ifru_flags: c_short,
-    ifru_mtu: c_int,
-}
-
-#[repr(C)]
-struct Ifreq {
-    ifr_name: [c_char; IFNAMSIZ],
-    ifr_ifru: Ifrifru,
-}
-
-struct Tun {
-    name: String,
-    handle: fs::File,
-    mtu: i32,
-}
-
-impl Tun {
-    pub fn create(name: &str) -> Result<Tun, io::Error> {
-        let path = path::Path::new(TUN_PATH);
-        let file = try!(fs::OpenOptions::new().read(true).write(true).open(&path));
-
-        let mut req = Ifreq {
-            ifr_name: {
-                let mut buffer = [0i8; IFNAMSIZ];
-                let tun_name: Vec<i8> = String::from(name).as_bytes().into_iter().map(|w| *w as i8).collect();
-                buffer[..tun_name.len()].clone_from_slice(&tun_name);
-                buffer
-            },
-            ifr_ifru: Ifrifru { ifru_flags: IFF_TUN | IFF_NO_PI },
-        };
-
-        let rv = unsafe { ioctl(file.as_raw_fd(), TUNSETIFF, &mut req) };
-        if rv < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let sock = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
-        let rv = unsafe { ioctl(sock, SIOCGIFMTU, &mut req) };
-        if rv < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let tun = Tun {
-            name: String::from(TUN_NAME),
-            handle: file,
-            mtu: unsafe { req.ifr_ifru.ifru_mtu },
-        };
-
-        Ok(tun)
-    }
-
-    pub fn up(&self) {
-        let status = process::Command::new("ip")
-                            .args(&["link", "set", &format!("{}", self.name), "up"])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-        let status = process::Command::new("ip")
-                            .args(&["addr", "add", "10.0.0.2/24", "dev", &format!("{}", self.name)])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-        let status = process::Command::new("ip")
-                            .args(&["route", "add", "default", "via", "10.0.0.2", "dev", &format!("{}", self.name), "table", "100"])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-        let status = process::Command::new("ip")
-                            .args(&["rule", "add", "from", "all", "iif", &format!("{}", self.name), "pref", "10", "lookup", "main"])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-        let status = process::Command::new("sysctl")
-                            .args(&["-w", &format!("net.ipv4.conf.{}.accept_local=1", self.name)])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-        let status = process::Command::new("ip")
-                            .args(&["rule", "add", "from", "all", "pref", "100", "lookup", "100"])
-                            .status()
-                            .expect("...");
-        assert!(status.success());
-
-    }
-
-}
-
-impl Read for Tun {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.handle.read(buf)
-    }
-}
-
-impl Write for Tun {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.handle.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.handle.flush()
-    }
-}
-
-#[repr(packed)]
-pub struct IPv4Header {
-    pub version_ihl: u8, // IP version (= 4) + Internet header length
-    pub type_of_service: u8, // Type of service
-    pub total_length: u16, // Total length in octets
-    pub identification: u16, // Identification
-    pub flags_fragment_offset: u16, // 3-bits Flags + Fragment Offset
-    pub time_to_live: u8, // Time To Live
-    pub protocol: u8, // Protocol
-    pub header_checksum: u16, // Checksum
-    pub source_address: u32, // Source Address
-	pub destination_address: u32, // Destination Address
-}
-
-#[repr(packed)]
-pub struct ICMPHeader {
-    pub icmp_type: u8,
-    pub icmp_code: u8,
-    pub icmp_checksum: u16,
-    pub icmp_ident: u16,
-    pub icmp_seq_num: u16,
-}
-
-fn icmp_cksum(data: &[u8]) -> u16 {
-    raw_cksum(data.as_ptr() as *const u16, data.len())
-}
-
-fn raw_cksum<T>(buf: *const T, len: usize) -> u16 {
-	let mut sum = 0u32;
-    let mut remaining_len = len;
-    let mut ptr = buf as *const u16;
-    while remaining_len > 1 {
+fn cleanup(signum: i32) {
+    if signum == libc::SIGINT {
         unsafe {
-            sum += *ptr as u32;
-            ptr = ptr.offset(1);
+            match TUN {
+                Some(ref tun) =>
+                    tun.down(),
+                None => {},
+            }
         }
-        remaining_len -= 2;
+        process::exit(0);
     }
+}
 
-    if remaining_len == 1 {
-        unsafe {
-            sum += *(ptr as *const u8) as u32;
+fn unwrap_tun() -> &'static mut Tun {
+    unsafe {
+        match TUN {
+            Some(ref mut x) => x,
+            None => panic!(),
         }
     }
+}
 
-    while sum >> 16 != 0 {
-        sum = (sum >> 16) + (sum & 0xFFFF);
+fn icmp_echo(ori_ipv4_packet: IPv4Packet, total_len: usize) -> Option<Vec<u8>> {
+    let payload_len =
+        (ori_ipv4_packet.total_length() - ori_ipv4_packet.header_length() as u16 * 4) as usize;
+    let ori_icmp = ICMPPacket::new(ori_ipv4_packet.payload())
+                                .expect("ICMPHeader new failed");
+
+    if ori_icmp.icmp_type() != 0x08 {
+        return None;
     }
 
-    !sum as u16
-}
+    let icmp_request = ori_icmp;
 
-fn ipv4_cksum(data: &[u8]) -> u16 {
-    raw_cksum(data.as_ptr() as *const IPv4Header, mem::size_of::<IPv4Header>())
-}
+    println!("  icmp_request:\n    type=0x{:02x} code=0x{:02x} header_checksum=0x{:04x} identifier=0x{:04x} sequence_number={}\n",
+             icmp_request.icmp_type(),
+             icmp_request.icmp_code(),
+             icmp_request.header_checksum(),
+             icmp_request.identifier(),
+             icmp_request.sequence_number());
 
-fn ipv4_header_parse(data: &[u8]) {
-    let header = unsafe { &*(data.as_ptr() as *const IPv4Header) };
-    println!("version_ihl=0x{:x}, type_of_service=0x{:x}, total_length={}, identification={}, time_to_live=0x{:x}, header_checksum=0x{:x}, src={}, dst={}, protocol=0x{:x}",
-             header.version_ihl, header.type_of_service, u16::from_be(header.total_length), u16::from_be(header.identification), header.time_to_live,
-             header.header_checksum, pretty_print_ipv4(header.source_address), pretty_print_ipv4(header.destination_address), header.protocol);
-    if header.protocol == 0x01 {
-        icmp_header_parse(&data[20..]);
+    let mut data: Vec<u8> = vec![0u8; total_len];
+    {
+        let mut payload: Vec<u8> = vec![0u8; payload_len];
+        let mut icmp_echo = MutICMPPacket::new(&mut payload)
+                                        .expect("ICMPPacket new failed");
+        icmp_echo.set_icmp_type(0u8);
+        icmp_echo.set_icmp_code(0u8);
+        icmp_echo.set_header_checksum(0u16);
+        icmp_echo.data()[4..].clone_from_slice(&(icmp_request.data()[4..payload_len]));
+        
+        let checksum = raw_checksum(icmp_echo.data().as_ptr(), icmp_echo.data().len());
+        icmp_echo.set_header_checksum(checksum);
+
+        let mut ipv4_packet = MutIPv4Packet::new(&mut data).expect("IPv4Packet new failed");
+        ipv4_packet.data()
+                    [..IPv4Packet::MIN_LEN]
+                    .clone_from_slice(&ori_ipv4_packet.data()[..IPv4Packet::MIN_LEN]);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_payload(&icmp_echo.data());
+        ipv4_packet.set_header_checksum(0);
+        ipv4_packet.set_source_address(ori_ipv4_packet.destination_address());
+        ipv4_packet.set_destination_address(ori_ipv4_packet.source_address());
+        ipv4_packet.set_identification(ori_ipv4_packet.identification() & 0xf8ff); // random identification
+        let checksum = raw_checksum(ipv4_packet.data().as_ptr(), ipv4_packet.data().len());
+        ipv4_packet.set_header_checksum(checksum);
+
+        let ipv4_packet = ipv4_packet.as_immutable();
+        println!("ipv4_packet:\n    version={} header_length={} total_length=0x{:04x} identification=0x{:04x} ttl={} protocol=0x{:02x} header_checksum=0x{:04x} source_address={} destination_address={}",
+                 ipv4_packet.version(),
+                 ipv4_packet.header_length(),
+                 ipv4_packet.total_length(),
+                 ipv4_packet.identification(),
+                 ipv4_packet.ttl(),
+                 ipv4_packet.protocol(),
+                 ipv4_packet.header_checksum(),
+                 Ipv4Addr::from(ipv4_packet.source_address()),
+                 Ipv4Addr::from(ipv4_packet.destination_address()));
+
+        let icmp_echo = icmp_echo.as_immutable();
+        println!("  icmp_echo:\n    type=0x{:02x} code=0x{:02x} header_checksum=0x{:04x} identifier=0x{:04x} sequence_number={}\n",
+                 icmp_echo.icmp_type(),
+                 icmp_echo.icmp_code(),
+                 icmp_echo.header_checksum(),
+                 icmp_echo.identifier(),
+                 icmp_echo.sequence_number());
     }
-}
-
-fn pretty_print_ipv4(address: u32) -> String {
-    let address = u32::from_be(address);
-    format!("{}.{}.{}.{}", address >> 24 & 0xFF, address >> 16 & 0x00FF, address >> 8 & 0x0000FF, address & 0x000000FF)
-}
-
-fn icmp_header_parse(data: &[u8]) {
-    let header = unsafe { &*(data.as_ptr() as *const ICMPHeader) };
-    println!("  icmp_type=0x{:x}, icmp_code=0x{:x}, icmp_checksum={:x}, icmp_ident={}, icmp_seq_num={}",
-             header.icmp_type, header.icmp_code, header.icmp_checksum, u16::from_be(header.icmp_ident), u16::from_be(header.icmp_seq_num));
+    Some(data)
 }
 
 fn main() {
-            /*
-            let mut buffer = [0i8; IFNAMSIZ];
-            let tun_name = String::from(TUN_NAME);
-            let tun_name_array_i8 = unsafe { mem::transmute::<&[u8], &[i8]>(tun_name.as_bytes()) };
-            buffer[..tun_name.len()].clone_from_slice(tun_name_array_i8);
-            buffer
-            */
-    let mut tun = Tun::create(TUN_NAME).unwrap();
-    tun.up();
 
-    println!("file={:?}, mtu={}", tun.handle, tun.mtu);
-    let mut data = vec![0u8; tun.mtu as usize];
-    let mut len: usize = 0;
+    match Tun::create(TUN_NAME) {
+        Ok(result) => unsafe {
+            result.up();
+            TUN = Some(result);
+        },
+        Err(e) => panic!(e),
+    };
+
+    unsafe {
+        libc::signal(libc::SIGINT, cleanup as usize);
+    }
+
+    let tun = unwrap_tun();
 
     loop {
-        match tun.read(&mut data) {
-            Ok(l) => {
-                println!("length={}", l);
-                len = l;
-            },
-            Err(e) => {} ,
+        let mut buffer = vec![0u8; tun.mtu];
+        let total_len = tun.read(buffer.as_mut_slice()).unwrap();
+        let ipv4_packet = IPv4Packet::new(buffer.as_slice())
+                                    .expect("IPv4Packet new failed.");
+        println!("ori_ipv4_packet:\n    version={} header_length={} total_length=0x{:04x} identification=0x{:04x} ttl={} protocol=0x{:02x} header_checksum=0x{:04x} source_address={} destination_address={}",
+                 ipv4_packet.version(),
+                 ipv4_packet.header_length(),
+                 ipv4_packet.total_length(),
+                 ipv4_packet.identification(),
+                 ipv4_packet.ttl(),
+                 ipv4_packet.protocol(),
+                 ipv4_packet.header_checksum(),
+                 Ipv4Addr::from(ipv4_packet.source_address()),
+                 Ipv4Addr::from(ipv4_packet.destination_address()));
+        if ipv4_packet.protocol() == 0x01 {
+            match icmp_echo(ipv4_packet, total_len) {
+                Some(data) => {
+                    let _ = tun.write(data.as_slice());
+                },
+                None => {
+                    let _ = tun.write(buffer.as_slice());
+                },
+            };
+            continue;
         }
-
-        ipv4_header_parse(&data);
-        tun.write(&data);
+        let _ = tun.write(buffer.as_slice());
     }
 }
