@@ -55,9 +55,10 @@ impl Tun {
                 let name: Vec<i8> = name.as_bytes().into_iter().map(|w| *w as i8).collect();
                 buffer[..name.len()].clone_from_slice(&name);
                 buffer
-        },
+            },
             ifr_ifru: Ifrifru { 
-                ifru_flags: IFF_TUN | IFF_NO_PI },
+                ifru_flags: IFF_TUN | IFF_NO_PI
+            },
         };
 
         let rv = unsafe { ioctl(file.as_raw_fd(), TUNSETIFF, &mut req) };
