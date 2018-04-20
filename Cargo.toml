@@ -1,0 +1,8 @@
+[package]
+name = "lsoup"
+version = "0.1.0"
+authors = ["time-river <me@vvl.me>"]
+
+[dependencies]
+libc = "*"
+bitflags = "1.0"
