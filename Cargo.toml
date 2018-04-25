@@ -6,3 +6,4 @@ authors = ["time-river <me@vvl.me>"]
 [dependencies]
 libc = "*"
 bitflags = "1.0"
+mio = "0.6"
