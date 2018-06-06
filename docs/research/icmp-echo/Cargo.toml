@@ -1,7 +1,0 @@
-[package]
-name = "icmp-echo"
-version = "0.1.0"
-authors = ["time-river <me@vvl.me>"]
-
-[dependencies]
-libc = "*"
