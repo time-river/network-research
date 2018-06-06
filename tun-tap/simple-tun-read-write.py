@@ -11,7 +11,8 @@ prepare:
     # ip route add default via 10.0.0.2 dev tun0 table 100
     # ip rule add from all lookup 100 
     # ip rule add from all iif tun0 lookup main
-
+    # sysctl -w net.ipv4.conf.tun0.accept_local=1
+    
 reference:
     feasibility
         https://github.com/alwaystest/Blog/issues/20
